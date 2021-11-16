@@ -1,0 +1,348 @@
+---
+title: Spatial Regression - Mississippi <br><small>Advanced Data Analytics</small></br>
+author: Nate Selleck
+output:
+  html_notebook:
+    df_print: paged
+    rows.print: 10
+    theme: cosmo
+    highlight: breezedark
+    number_sections: yes
+    toc:  no
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document: default
+  html_document: 
+    df_print: paged
+    rows.print: 10
+    theme: cosmo
+    highlight: breezedark
+    number_sections: yes
+    toc: no
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+editor_options:
+  chunk_output_type: inline
+  mode: gfm
+---
+<body style = "background-color:#b1d3aa">
+
+```{r Packages, echo=TRUE, message=FALSE, warning=FALSE}
+
+pacman::p_load("biscale", "cleangeo", "cowplot", "dplyr", "geosphere", "ggplot2", "maps", "maptools", "rgdal", "rgeos", "sf", "sp", "spatialreg", "spdep", "tidyr", "mapproj")
+
+```
+
+```{r Data Chunk}
+
+data <- read.csv('./Data/childpov18_southfull.csv', 
+                 colClasses = c("character", "character", "character", 
+                                "numeric", "numeric", "numeric", "numeric",
+                                "numeric", "numeric", "numeric", "numeric",
+                                "numeric", "numeric", "numeric", "numeric", 
+                                "numeric", "numeric", "numeric", "numeric",
+                                "numeric", "numeric", "numeric", "numeric",
+                                "numeric", "numeric", "numeric", "numeric", 
+                                "numeric", "numeric", "numeric", "numeric",
+                                "numeric", "numeric", "numeric", "numeric"))
+
+names(data)[names(data)=="X2016.child.poverty"] <- "child.pov.2016"
+
+ms_pov <- data %>% subset(State == "MS")
+
+summary(ms_pov)
+
+```
+
+```{r Little Bit of OLS}
+
+equation <- child.pov.2016 ~ rural + urban + lnmanufacturing + lnag + 
+  lnretail + lnhealthss + lnconstruction + lnlesshs + 
+  lnunemployment + lnsinglemom + lnblack + lnhispanic + 
+  lnuninsured + lnincome_ratio + lnteenbirth + lnunmarried
+
+options(scipen = 5)
+
+ols <- lm(equation, data=ms_pov)
+summary(ols)
+
+```
+
+```{r Howdy Contiguity Neighbors}
+
+fips <- county.fips
+fips.codes <- separate(data = fips, col = polyname, into = c("state", "county"), sep = ",")
+ms_fips <- subset(fips.codes, state=="mississippi", select=fips)
+
+mississippi <- map(database = "county", regions = "mississippi", fill=T, plot=F)
+ms_sp = map2SpatialPolygons(mississippi,ms_fips$fips,CRS("+proj=longlat"))
+
+```
+
+```{r Who you callin a Moran}
+
+cleaned <- clgeo_Clean(ms_sp)
+neighb.data <- poly2nb(cleaned, queen=T)
+cont.neighb <- nb2listw(neighb.data,style="W", zero.policy = TRUE)
+
+lm.morantest(ols, cont.neighb)
+
+```
+
+```{r LeGrange}
+
+lm.LMtests(ols, cont.neighb, test="all")
+
+```
+
+```{r Spatial Error}
+
+sp.err.model <- spatialreg::errorsarlm(equation, data=ms_pov, cont.neighb)
+summary(sp.err.model, Nagelkerke = TRUE)
+
+```
+
+```{r K Neighbors}
+
+all.xy <-centroid(ms_sp)
+colnames(all.xy) <- c("x","y")
+
+all.dist.k1 <- knn2nb(knearneigh(all.xy, k=1, longlat = TRUE))
+all.dist.k3 <- knn2nb(knearneigh(all.xy, k=3, longlat = TRUE))
+all.dist.k5 <- knn2nb(knearneigh(all.xy, k=5, longlat = TRUE))
+
+#Determine max k distance value to neighbor
+all.max.k1 <- max(unlist(nbdists(all.dist.k1, all.xy, longlat=TRUE)))
+all.max.k3 <- max(unlist(nbdists(all.dist.k3, all.xy, longlat=TRUE)))
+all.max.k5 <- max(unlist(nbdists(all.dist.k5, all.xy, longlat=TRUE)))
+
+#Calculate neighbors based on distance
+all.sp.dist.k1 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k1, longlat = TRUE)
+all.sp.dist.k3 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k3, longlat = TRUE)
+all.sp.dist.k5 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k5, longlat = TRUE)
+
+#Create neighbor list
+all.dist.neighb.k1 <- nb2listw(all.sp.dist.k1,style="W", zero.policy = TRUE)
+all.dist.neighb.k3 <- nb2listw(all.sp.dist.k3,style="W", zero.policy = TRUE)
+all.dist.neighb.k5 <- nb2listw(all.sp.dist.k5,style="W", zero.policy = TRUE)
+
+```
+
+```{r Distance Lag}
+
+all.dist.lag.k1 <- spatialreg::lagsarlm(equation, data = ms_pov, listw = all.dist.neighb.k1)
+all.dist.lag.k3 <- spatialreg::lagsarlm(equation, data = ms_pov, listw = all.dist.neighb.k3)
+all.dist.lag.k5 <- spatialreg::lagsarlm(equation, data = ms_pov, listw = all.dist.neighb.k5)
+
+summary(all.dist.lag.k1, NagelKerke = TRUE)
+
+```
+
+```{r Distance Error}
+
+all.dist.err.k1 <- spatialreg::errorsarlm(equation, data = ms_pov, listw = all.dist.neighb.k1)
+all.dist.err.k3 <- spatialreg::errorsarlm(equation, data = ms_pov, listw = all.dist.neighb.k3)
+all.dist.err.k5 <- spatialreg::errorsarlm(equation, data = ms_pov, listw = all.dist.neighb.k5)
+
+summary(all.dist.err.k1, Nagelkerke = TRUE)
+
+```
+
+```{r MAP}
+
+dist.err.data <- summary(sp.err.model, correlation=TRUE, Nagelkerke = TRUE)
+
+dist.err.output <- cbind.data.frame(ms_pov$FIPS,
+                                    dist.err.data$fitted.values, 
+                                    dist.err.data$residual, 
+                                    ms_pov$child.pov.2016, 
+                                    ms_pov$urban, 
+                                    ms_pov$lnunemployment, 
+                                    ms_pov$lnlesshs, 
+                                    ms_pov$lnsinglemom,
+                                    stringsAsFactors = FALSE)
+
+#Renaming columns
+colnames(dist.err.output) <- c("fips","fitted","resid","childpov",
+                        "urban","unemployment","less_hs","single_mom")
+
+```
+
+```{r Urban Map, fig.height=6, fig.width=8}
+
+ms_fortify <- fortify(ms_sp)
+
+ms_poly <- merge(x = ms_fortify, y = dist.err.output, 
+                 by.x = "id", by.y = "fips", all = TRUE)
+
+urban_data <- bi_class(ms_poly, x = childpov, y = urban, 
+                           dim = 3, style = "quantile")
+
+legend_urban <- bi_legend(pal = "DkViolet",
+                    dim = 3,
+                    xlab = "Child Poverty",
+                    ylab = "Urbanization",
+                    size = 6)
+
+world <- map_data("world")
+states <- map_data("state")
+southern_states <- subset(states, region %in% 
+                            c("texas", "arkansas", "louisiana", "mississippi", 
+                              "alabama", "georgia", "florida", "north carolina",
+                              "south carolina", "tennessee", "oklahoma", 
+                              "kentucky", "west virginia", "virginia", 
+                              "maryland", "delaware", "district of columbia"))
+
+urban_pov_map <- ggplot() + 
+  geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
+  geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
+  geom_polygon(data = southern_states, aes(x=long,y=lat, group=group), fill = NA, size = 0.01, color = "white") +  
+  geom_polygon(data = urban_data, aes(x=long, y=lat, group=group, fill = bi_class), color = "grey50", show.legend = FALSE) + 
+  bi_scale_fill(pal = "DkViolet", dim = 3) +
+  coord_map("conic", lat0 = 30, xlim=c(-94,-85), ylim=c(29,36)) +
+  theme_void() + theme(legend.title.align=0.5) +
+  theme(panel.background = element_rect(fill = 'deepskyblue'),
+        panel.grid.major = element_line(colour = NA)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Child Poverty", 
+       title = "Bivariate Map of Child Poverty and Urbanization") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+final_urban_map <- ggdraw() +
+  draw_plot(urban_pov_map, 0, 0, 1, 1) +
+  draw_plot(legend_urban, 0.60, 0.035, 0.3, 0.3)
+final_urban_map
+
+```
+
+```{r Unemployment, fig.height=6, fig.width=8}
+
+
+unemployment_data <- bi_class(ms_poly, x = childpov, y = unemployment, 
+                           dim = 3, style = "quantile")
+
+legend_unemp <- bi_legend(pal = "DkViolet",
+                    dim = 3,
+                    xlab = "Child Poverty",
+                    ylab = "Unemployment",
+                    size = 6)
+
+world <- map_data("world")
+states <- map_data("state")
+southern_states <- subset(states, region %in% 
+                            c("texas", "arkansas", "louisiana", "mississippi", 
+                              "alabama", "georgia", "florida", "north carolina",
+                              "south carolina", "tennessee", "oklahoma", 
+                              "kentucky", "west virginia", "virginia", 
+                              "maryland", "delaware", "district of columbia"))
+
+unemp_pov_map <- ggplot() + 
+  geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
+  geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
+  geom_polygon(data = southern_states, aes(x=long,y=lat, group=group), fill = NA, size = 0.01, color = "white") +  
+  geom_polygon(data = unemployment_data, aes(x=long, y=lat, group=group, fill = bi_class), color = "grey50", show.legend = FALSE) + 
+  bi_scale_fill(pal = "DkViolet", dim = 3) +
+  coord_map("conic", lat0 = 30, xlim=c(-94,-85), ylim=c(29,36)) +
+  theme_void() + theme(legend.title.align=0.5) +
+  theme(panel.background = element_rect(fill = 'deepskyblue'),
+        panel.grid.major = element_line(colour = NA)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Child Poverty", 
+       title = "Bivariate Map of Child Poverty and Unemployment Rate") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+final_unemp_map <- ggdraw() +
+  draw_plot(unemp_pov_map, 0, 0, 1, 1) +
+  draw_plot(legend_unemp, 0.60, 0.035, 0.3, 0.3)
+final_unemp_map
+
+```
+
+```{r Less HS, fig.height=6, fig.width=8}
+
+
+lesshs_data <- bi_class(ms_poly, x = childpov, y = less_hs, 
+                           dim = 3, style = "quantile")
+
+legend_hs <- bi_legend(pal = "DkViolet",
+                    dim = 3,
+                    xlab = "Child Poverty",
+                    ylab = "Less HS",
+                    size = 6)
+
+world <- map_data("world")
+states <- map_data("state")
+southern_states <- subset(states, region %in% 
+                            c("texas", "arkansas", "louisiana", "mississippi", 
+                              "alabama", "georgia", "florida", "north carolina",
+                              "south carolina", "tennessee", "oklahoma", 
+                              "kentucky", "west virginia", "virginia", 
+                              "maryland", "delaware", "district of columbia"))
+
+hs_pov_map <- ggplot() + 
+  geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
+  geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
+  geom_polygon(data = southern_states, aes(x=long,y=lat, group=group), fill = NA, size = 0.01, color = "white") +  
+  geom_polygon(data = lesshs_data, aes(x=long, y=lat, group=group, fill = bi_class), color = "grey50", show.legend = FALSE) + 
+  bi_scale_fill(pal = "DkViolet", dim = 3) +
+  coord_map("conic", lat0 = 30, xlim=c(-94,-85), ylim=c(29,36)) +
+  theme_void() + theme(legend.title.align=0.5) +
+  theme(panel.background = element_rect(fill = 'deepskyblue'),
+        panel.grid.major = element_line(colour = NA)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Child Poverty", 
+       title = "Bivariate Map of Child Poverty and High School Graduates") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+final_hs_map <- ggdraw() +
+  draw_plot(hs_pov_map, 0, 0, 1, 1) +
+  draw_plot(legend_hs, 0.60, 0.035, 0.3, 0.3)
+final_hs_map
+
+```
+
+```{r Single Mom, fig.height=6, fig.width=8}
+
+
+singlemom_data <- bi_class(ms_poly, x = childpov, y = single_mom, 
+                           dim = 3, style = "quantile")
+
+legend_mom <- bi_legend(pal = "DkViolet",
+                    dim = 3,
+                    xlab = "Child Poverty",
+                    ylab = "Single Mother\n Households",
+                    size = 6)
+
+world <- map_data("world")
+states <- map_data("state")
+southern_states <- subset(states, region %in% 
+                            c("texas", "arkansas", "louisiana", "mississippi", 
+                              "alabama", "georgia", "florida", "north carolina",
+                              "south carolina", "tennessee", "oklahoma", 
+                              "kentucky", "west virginia", "virginia", 
+                              "maryland", "delaware", "district of columbia"))
+
+mom_pov_map <- ggplot() + 
+  geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
+  geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
+  geom_polygon(data = southern_states, aes(x=long,y=lat, group=group), fill = NA, size = 0.01, color = "white") +  
+  geom_polygon(data = singlemom_data, aes(x=long, y=lat, group=group, fill = bi_class), color = "grey50", show.legend = FALSE) + 
+  bi_scale_fill(pal = "DkViolet", dim = 3) +
+  coord_map("conic", lat0 = 30, xlim=c(-94,-85), ylim=c(29,36)) +
+  theme_void() + theme(legend.title.align=0.5) +
+  theme(panel.background = element_rect(fill = 'deepskyblue'),
+        panel.grid.major = element_line(colour = NA)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Child Poverty", 
+       title = "Bivariate Map of Child Poverty and Single Mother Households") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+final_mom_map <- ggdraw() +
+  draw_plot(mom_pov_map, 0, 0, 1, 1) +
+  draw_plot(legend_mom, 0.60, 0.035, 0.3, 0.3)
+final_mom_map
+
+
+```
+
