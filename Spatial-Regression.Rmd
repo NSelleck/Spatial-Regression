@@ -2,17 +2,6 @@
 title: Spatial Regression - Mississippi <br><small>Advanced Data Analytics</small></br>
 author: Nate Selleck
 output:
-  html_notebook:
-    df_print: paged
-    rows.print: 10
-    theme: cosmo
-    highlight: breezedark
-    number_sections: yes
-    toc:  no
-    toc_float:
-      collapsed: no
-      smooth_scroll: yes
-  pdf_document: default
   html_document: 
     df_print: paged
     rows.print: 10
@@ -20,6 +9,17 @@ output:
     highlight: breezedark
     number_sections: yes
     toc: no
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document: default
+  html_notebook:
+    df_print: paged
+    rows.print: 10
+    theme: cosmo
+    highlight: breezedark
+    number_sections: yes
+    toc:  no
     toc_float:
       collapsed: no
       smooth_scroll: yes
@@ -34,6 +34,8 @@ editor_options:
 pacman::p_load("biscale", "cleangeo", "cowplot", "dplyr", "geosphere", "ggplot2", "maps", "maptools", "rgdal", "rgeos", "sf", "sp", "spatialreg", "spdep", "tidyr", "mapproj")
 
 ```
+
+# Read in the Data
 
 ```{r Data Chunk}
 
@@ -56,6 +58,8 @@ summary(ms_pov)
 
 ```
 
+# Run the OLS
+
 ```{r Little Bit of OLS}
 
 equation <- child.pov.2016 ~ rural + urban + lnmanufacturing + lnag + 
@@ -70,6 +74,8 @@ summary(ols)
 
 ```
 
+# Contiguity Neighbors
+
 ```{r Howdy Contiguity Neighbors}
 
 fips <- county.fips
@@ -81,6 +87,8 @@ ms_sp = map2SpatialPolygons(mississippi,ms_fips$fips,CRS("+proj=longlat"))
 
 ```
 
+# Moran and LaGrange
+
 ```{r Who you callin a Moran}
 
 cleaned <- clgeo_Clean(ms_sp)
@@ -91,18 +99,33 @@ lm.morantest(ols, cont.neighb)
 
 ```
 
-```{r LeGrange}
+$~$
+
+Based on the p-value from the Moran Test, I can reject the null hypothesis that there is no spatial correlation in the residuals. Because there is spatial dependency in child poverty rates in Mississippi, I ran a LaGrange to find the best model
+
+$~$
+
+```{r LaGrange}
 
 lm.LMtests(ols, cont.neighb, test="all")
 
 ```
 
+$~$
+
+The robust LM test for error dependence had the lowest p-value, so I created a Spatial Error model for the data.
+
+$~$
+
+# Spatial Error Model
 ```{r Spatial Error}
 
 sp.err.model <- spatialreg::errorsarlm(equation, data=ms_pov, cont.neighb)
 summary(sp.err.model, Nagelkerke = TRUE)
 
 ```
+
+# K-nearest Neighbors
 
 ```{r K Neighbors}
 
@@ -149,6 +172,13 @@ all.dist.err.k5 <- spatialreg::errorsarlm(equation, data = ms_pov, listw = all.d
 summary(all.dist.err.k1, Nagelkerke = TRUE)
 
 ```
+$~$
+
+Based on the p-values for the Distance Lag and Distance Error models, the distance to the nearest neighbor does not seem to affect child poverty rates within a county.
+
+$~$
+
+# Time to Make Maps
 
 ```{r MAP}
 
